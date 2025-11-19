@@ -1,0 +1,48 @@
+version: "3.9"
+
+services:
+  plex:
+    image: lscr.io/linuxserver/plex:latest
+    container_name: plex
+    network_mode: host
+    environment:
+      - PUID=${PUID}
+      - PGID=${PGID}
+      - TZ=${TZ}
+      - VERSION=docker
+      - PLEX_CLAIM=${PLEX_CLAIM}
+      - ADVERTISE_IP=${PLEX_ADVERTISE_IP}
+    volumes:
+      - ${MEDIA_CONFIG_DIR}/plex:/config
+      - ${MEDIA_MEDIA_DIR}:/media
+    restart: unless-stopped
+
+  radarr:
+    image: lscr.io/linuxserver/radarr:latest
+    container_name: radarr
+    environment:
+      - PUID=${PUID}
+      - PGID=${PGID}
+      - TZ=${TZ}
+    volumes:
+      - ${MEDIA_CONFIG_DIR}/radarr:/config
+      - ${MEDIA_MEDIA_DIR}/movies:/movies
+      - ${MEDIA_DOWNLOADS_DIR}:/downloads
+    ports:
+      - "${RADARR_PORT}:7878"
+    restart: unless-stopped
+
+  sonarr:
+    image: lscr.io/linuxserver/sonarr:latest
+    container_name: sonarr
+    environment:
+      - PUID=${PUID}
+      - PGID=${PGID}
+      - TZ=${TZ}
+    volumes:
+      - ${MEDIA_CONFIG_DIR}/sonarr:/config
+      - ${MEDIA_MEDIA_DIR}/tv:/tv
+      - ${MEDIA_DOWNLOADS_DIR}:/downloads
+    ports:
+      - "${SONARR_PORT}:8989"
+    restart: unless-stopped
