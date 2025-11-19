@@ -1,10 +1,10 @@
 # media-server
 
-Scripts and configuration for running a self-hosted media stack with Plex, Radarr, and Sonarr via Docker Compose.
+Scripts and configuration for running a self-hosted media stack with Plex, Radarr, Sonarr, and Transmission via Docker Compose.
 
 ## Prerequisites
 - Linux/macOS host with Docker Engine and the Docker Compose plugin (or `docker-compose`)
-- Open ports 32400 (Plex), 7878 (Radarr), 8989 (Sonarr) on your LAN
+- Open ports 32400 (Plex), 7878 (Radarr), 8989 (Sonarr), 9091 (Transmission web/RPC), and 51413 TCP/UDP (Transmission peers) on your LAN or allow them via UFW
 - Plex account (optional but required to claim the server)
 
 ## Quick start
@@ -27,5 +27,16 @@ Scripts and configuration for running a self-hosted media stack with Plex, Radar
    - Plex: `http://<host>:32400/web` (host networking, so no explicit port mapping)
    - Radarr: `http://<host>:7878`
    - Sonarr: `http://<host>:8989`
+   - Transmission: `http://<host>:9091`
 
 Persistent data lives under the paths defined in `.env` (defaults to `media-data/` next to the repo). Back up those directories to preserve your configuration and libraries.
+
+## Transmission integration
+- Transmission shares the same `/downloads` volume as Radarr and Sonarr, so completed downloads are instantly visible to the indexers.
+- Set `TRANSMISSION_RPC_USERNAME` / `TRANSMISSION_RPC_PASSWORD` (optional but recommended) and use the service name `transmission` with port `${TRANSMISSION_RPC_PORT}` when configuring the Download Client inside Radarr/Sonarr.
+- The deploy script pre-creates `watch` and `incomplete` folders under `MEDIA_DOWNLOADS_DIR` so Transmission's watch directory and incomplete folder work out of the box.
+
+## Firewall automation
+- Define `MEDIA_LOCAL_NETWORK_CIDR` (for example `192.168.1.0/24`) in `.env`. The deploy script enables UFW (if needed) and allows Plex, Radarr, Sonarr, and Transmission ports from that CIDR automatically.
+- Optional `MEDIA_EXTRA_TCP_PORTS` lets you open additional TCP ports (comma-separated) for the same CIDR.
+- Rollback removes every firewall rule the deploy step created, restoring the host to its previous state.

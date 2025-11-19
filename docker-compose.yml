@@ -46,3 +46,27 @@ services:
     ports:
       - "${SONARR_PORT}:8989"
     restart: unless-stopped
+
+  transmission:
+    image: lscr.io/linuxserver/transmission:latest
+    container_name: transmission
+    environment:
+      - PUID=${PUID}
+      - PGID=${PGID}
+      - TZ=${TZ}
+      - USER=${TRANSMISSION_RPC_USERNAME}
+      - PASS=${TRANSMISSION_RPC_PASSWORD}
+      - PEERPORT=${TRANSMISSION_PEER_PORT}
+      - RPCPORT=${TRANSMISSION_RPC_PORT}
+      - WEBUI_PORT=${TRANSMISSION_WEB_PORT}
+    volumes:
+      - ${MEDIA_CONFIG_DIR}/transmission:/config
+      - ${MEDIA_DOWNLOADS_DIR}:/downloads
+      - ${MEDIA_DOWNLOADS_DIR}/watch:/watch
+      - ${MEDIA_DOWNLOADS_DIR}/incomplete:/incomplete
+    ports:
+      - "${TRANSMISSION_WEB_PORT}:${TRANSMISSION_WEB_PORT}"
+      - "${TRANSMISSION_RPC_PORT}:${TRANSMISSION_RPC_PORT}"
+      - "${TRANSMISSION_PEER_PORT}:${TRANSMISSION_PEER_PORT}"
+      - "${TRANSMISSION_PEER_PORT}:${TRANSMISSION_PEER_PORT}/udp"
+    restart: unless-stopped
