@@ -8,21 +8,24 @@ Scripts and configuration for running a self-hosted media stack with Plex, Radar
 - Plex account (optional but required to claim the server)
 
 ## Quick start
-1. Copy the sample environment file and edit it:
+1. Configure environment variables  
+   - On first run the deploy script will automatically copy `.env.example` to `.env` if it does not exist.  
+   - Update `TZ`, `PUID`, `PGID`, storage paths, and optionally `PLEX_CLAIM`/`PLEX_ADVERTISE_IP` to match your host.
+2. Deploy or manage the stack:
    ```bash
-   cp .env.example .env
+   ./deploy_media_stack.sh             # default "deploy" (docker compose up -d)
+   ./deploy_media_stack.sh deploy --build   # pass extra flags to `docker compose up`
+   ./deploy_media_stack.sh pull        # forward arbitrary commands to docker compose
    ```
-   Update `TZ`, `PUID`, `PGID`, storage paths, and optionally `PLEX_CLAIM`/`PLEX_ADVERTISE_IP`.
-2. Deploy (or manage) the stack:
+   The script verifies Docker/Docker Compose availability, loads the `.env`, and creates all required directories before running Compose.
+3. Roll back everything (containers, images, volumes, configs, downloads, and library folders created by the stack):
    ```bash
-   ./deploy_media_stack.sh          # default: docker compose up -d
-   ./deploy_media_stack.sh down     # stop and remove containers
-   ./deploy_media_stack.sh pull     # update images
+   ./deploy_media_stack.sh rollback
    ```
-   The script ensures all bind-mounted directories exist before running Docker Compose.
-3. Access the services:
+   **Warning:** rollback deletes `MEDIA_CONFIG_DIR`, `MEDIA_DOWNLOADS_DIR`, and the `movies`/`tv` subfolders under `MEDIA_MEDIA_DIR`.
+4. Access the services:
    - Plex: `http://<host>:32400/web` (host networking, so no explicit port mapping)
    - Radarr: `http://<host>:7878`
    - Sonarr: `http://<host>:8989`
 
-Persistent data lives under the paths defined in `.env` (defaults to `media-data/` next to the repo). Back up those directories to preserve your configuration and libraries. Remove the stack any time with `./deploy_media_stack.sh down`.
+Persistent data lives under the paths defined in `.env` (defaults to `media-data/` next to the repo). Back up those directories to preserve your configuration and libraries.
