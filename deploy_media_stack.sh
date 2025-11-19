@@ -35,8 +35,8 @@ PACKAGE_INDEX_REFRESHED=false
 SUDO_BIN=""
 # This array captures the resolved docker compose command variant (plugin or legacy binary).
 COMPOSE_CMD=()
-# This array stores every TCP port that should be opened via the firewall for the stack.
-FIREWALL_PORTS=()
+# This array stores firewall rules as proto|port|source entries so we can reproduce them during rollback.
+FIREWALL_RULES=()
 
 # This function prints informational messages with a consistent prefix for easier log scanning.
 log() {
@@ -71,6 +71,7 @@ Commands
 Environment
   MEDIA_STACK_ENV   Path to the .env file to use (defaults to .env next to this script).
   COMPOSE_FILE      Override the docker-compose file (defaults to docker-compose.yml next to this script).
+  MEDIA_LOCAL_NETWORK_CIDR CIDR block that should be allowed through the firewall (e.g. 192.168.1.0/24).
   MEDIA_EXTRA_TCP_PORTS A comma-separated list of extra TCP ports to open in the firewall (optional).
 EOF
 }
@@ -218,6 +219,68 @@ clear_firewall_state() {
   fi
 }
 
+# This function appends a firewall rule entry if it is not already present in the staging array.
+append_firewall_rule() {
+  local proto="$1"
+  local port="$2"
+  local source="${3:-any}"
+  if [[ -z "$port" ]]; then
+    return
+  fi
+  local entry="${proto}|${port}|${source}"
+  local existing
+  for existing in "${FIREWALL_RULES[@]}"; do
+    if [[ "$existing" == "$entry" ]]; then
+      return
+    fi
+  done
+  FIREWALL_RULES+=("$entry")
+}
+
+# This function checks whether a ufw rule already exists for the given protocol, port, and source.
+firewall_rule_exists() {
+  local proto="$1"
+  local port="$2"
+  local source="${3:-any}"
+  local status
+  status="$(run_privileged ufw status 2>/dev/null || true)"
+  if [[ -z "$status" ]]; then
+    return 1
+  fi
+  if [[ "$source" == "any" ]]; then
+    if grep -Fq "${port}/${proto}" <<<"$status"; then
+      return 0
+    fi
+    return 1
+  fi
+  while IFS= read -r line; do
+    if [[ "$line" == *"${port}/${proto}"* && "$line" == *"$source"* ]]; then
+      return 0
+    fi
+  done <<<"$status"
+  return 1
+}
+
+# This function applies a firewall rule (if missing) and records it for rollback.
+apply_firewall_rule() {
+  local proto="$1"
+  local port="$2"
+  local source="${3:-any}"
+  local pretty_source="${source:-any}"
+  if firewall_rule_exists "$proto" "$port" "$source"; then
+    log "Firewall rule for ${port}/${proto} from ${pretty_source} already exists; skipping."
+    return
+  fi
+  log "Adding firewall rule to allow ${port}/${proto} from ${pretty_source}"
+  local comment="media-stack-${port}-${proto}"
+  if [[ "$source" == "any" ]]; then
+    run_privileged ufw allow "$port/$proto" comment "$comment" >/dev/null
+  else
+    run_privileged ufw allow from "$source" to any port "$port" proto "$proto" comment "$comment" >/dev/null
+  fi
+  record_firewall_rule "${proto}|${port}|${source}"
+}
+
 # This function loads the stack's environment file so docker compose receives the correct variables.
 load_env() {
   log "Loading configuration from $ENV_FILE"
@@ -248,7 +311,7 @@ ensure_env_file() {
 # This function validates that every required environment variable has a value to prevent partial deployments.
 ensure_required_env_vars() {
   local missing=()
-  local required_vars=(PUID PGID TZ MEDIA_CONFIG_DIR MEDIA_MEDIA_DIR MEDIA_DOWNLOADS_DIR RADARR_PORT SONARR_PORT)
+  local required_vars=(PUID PGID TZ MEDIA_CONFIG_DIR MEDIA_MEDIA_DIR MEDIA_DOWNLOADS_DIR RADARR_PORT SONARR_PORT TRANSMISSION_WEB_PORT TRANSMISSION_RPC_PORT TRANSMISSION_PEER_PORT MEDIA_LOCAL_NETWORK_CIDR)
   local var
   for var in "${required_vars[@]}"; do
     if [[ -z "${!var:-}" ]]; then
@@ -296,9 +359,12 @@ prepare_directories() {
   ensure_dir "$MEDIA_CONFIG_DIR/plex"
   ensure_dir "$MEDIA_CONFIG_DIR/radarr"
   ensure_dir "$MEDIA_CONFIG_DIR/sonarr"
+  ensure_dir "$MEDIA_CONFIG_DIR/transmission"
   ensure_dir "$MEDIA_MEDIA_DIR/movies"
   ensure_dir "$MEDIA_MEDIA_DIR/tv"
   ensure_dir "$MEDIA_DOWNLOADS_DIR"
+  ensure_dir "$MEDIA_DOWNLOADS_DIR/watch"
+  ensure_dir "$MEDIA_DOWNLOADS_DIR/incomplete"
 }
 
 # This function determines whether the docker compose plugin or legacy binary should be used.
@@ -343,27 +409,37 @@ prepull_images() {
   run_with_retries "pulling docker images" run_compose pull
 }
 
-# This function gathers the TCP ports that must be opened for the stack based on configuration and sensible defaults.
-collect_firewall_ports() {
-  FIREWALL_PORTS=()
+# This function gathers the firewall rules required for every service so ufw can be configured consistently.
+collect_firewall_rules() {
+  FIREWALL_RULES=()
   local plex_port="${PLEX_HTTP_PORT:-32400}"
   local radarr_port="${RADARR_PORT:-7878}"
   local sonarr_port="${SONARR_PORT:-8989}"
-  local value
-  FIREWALL_PORTS+=("$plex_port" "$radarr_port" "$sonarr_port")
+  local transmission_web_port="${TRANSMISSION_WEB_PORT:-9091}"
+  local transmission_rpc_port="${TRANSMISSION_RPC_PORT:-9091}"
+  local transmission_peer_port="${TRANSMISSION_PEER_PORT:-51413}"
+  local local_cidr="${MEDIA_LOCAL_NETWORK_CIDR:-any}"
+  append_firewall_rule "tcp" "$plex_port" "$local_cidr"
+  append_firewall_rule "tcp" "$radarr_port" "$local_cidr"
+  append_firewall_rule "tcp" "$sonarr_port" "$local_cidr"
+  append_firewall_rule "tcp" "$transmission_web_port" "$local_cidr"
+  append_firewall_rule "tcp" "$transmission_rpc_port" "$local_cidr"
+  append_firewall_rule "tcp" "$transmission_peer_port" "$local_cidr"
+  append_firewall_rule "udp" "$transmission_peer_port" "$local_cidr"
   if [[ -n "${MEDIA_EXTRA_TCP_PORTS:-}" ]]; then
     IFS=',' read -r -a extra_ports <<<"$MEDIA_EXTRA_TCP_PORTS"
+    local value
     for value in "${extra_ports[@]}"; do
       value="${value//[[:space:]]/}"
-      [[ -n "$value" ]] && FIREWALL_PORTS+=("$value")
+      [[ -n "$value" ]] && append_firewall_rule "tcp" "$value" "$local_cidr"
     done
   fi
 }
 
-# This function ensures ufw is enabled and configured to allow each required TCP port for the media stack.
+# This function ensures ufw is enabled and configured to allow each required rule for the media stack.
 configure_firewall() {
-  collect_firewall_ports
-  if ((${#FIREWALL_PORTS[@]} == 0)); then
+  collect_firewall_rules
+  if ((${#FIREWALL_RULES[@]} == 0)); then
     log "No firewall ports requested; skipping firewall configuration."
     return
   fi
@@ -375,19 +451,11 @@ configure_firewall() {
     log "Enabling ufw firewall..."
     run_privileged ufw --force enable >/dev/null
   fi
-  local port
-  for port in "${FIREWALL_PORTS[@]}"; do
-    if [[ -z "$port" ]]; then
-      continue
-    fi
-    local rule="${port}/tcp"
-    if run_privileged ufw status | grep -qw "$rule"; then
-      log "Firewall rule for $rule already exists; skipping."
-    else
-      log "Adding firewall rule to allow $rule"
-      run_privileged ufw allow "$rule" comment "media-stack-${port}" >/dev/null
-      record_firewall_rule "$rule"
-    fi
+  local entry
+  for entry in "${FIREWALL_RULES[@]}"; do
+    IFS='|' read -r proto port source <<<"$entry"
+    [[ -z "$port" ]] && continue
+    apply_firewall_rule "$proto" "$port" "$source"
   done
 }
 
@@ -400,9 +468,23 @@ remove_firewall_rules() {
   ensure_command ufw
   while IFS= read -r rule; do
     [[ -z "$rule" ]] && continue
-    if run_privileged ufw status | grep -qw "$rule"; then
-      log "Removing firewall rule for $rule"
-      run_privileged ufw --force delete allow "$rule" >/dev/null || log "Failed to remove firewall rule $rule; continuing."
+    local proto
+    local port
+    local source
+    if [[ "$rule" == *"|"* ]]; then
+      IFS='|' read -r proto port source <<<"$rule"
+    else
+      proto="${rule##*/}"
+      port="${rule%/*}"
+      source="any"
+    fi
+    [[ -z "$proto" || -z "$port" ]] && continue
+    local pretty_source="${source:-any}"
+    log "Removing firewall rule for ${port}/${proto} from ${pretty_source}"
+    if [[ "$source" == "any" ]]; then
+      run_privileged ufw --force delete allow "$port/$proto" >/dev/null || log "Failed to remove firewall rule ${port}/${proto}; continuing."
+    else
+      run_privileged ufw --force delete allow from "$source" to any port "$port" proto "$proto" >/dev/null || log "Failed to remove firewall rule ${port}/${proto} from ${pretty_source}; continuing."
     fi
   done <"$FIREWALL_STATE_FILE"
   clear_firewall_state
