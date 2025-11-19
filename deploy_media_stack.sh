@@ -640,6 +640,17 @@ main() {
   fi
   case "$action" in
     help|-h|--help)
+      action="help"
+      ;;
+    deploy|--deploy|-deploy)
+      action="deploy"
+      ;;
+    rollback|--rollback|-rollback)
+      action="rollback"
+      ;;
+  esac
+  case "$action" in
+    help)
       usage
       ;;
     deploy)
