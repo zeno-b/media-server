@@ -35,6 +35,8 @@ PACKAGE_INDEX_REFRESHED=false
 SUDO_BIN=""
 # This array captures the resolved docker compose command variant (plugin or legacy binary).
 COMPOSE_CMD=()
+# This variable defines which docker compose release to download when repository packages are unavailable.
+COMPOSE_FALLBACK_VERSION="${COMPOSE_FALLBACK_VERSION:-v2.29.7}"
 # This array stores firewall rules as proto|port|source entries so we can reproduce them during rollback.
 FIREWALL_RULES=()
 
@@ -169,12 +171,90 @@ install_packages_if_missing() {
   esac
 }
 
+# This function checks whether the requested apt package exists in the configured repositories.
+apt_package_available() {
+  local package="$1"
+  if [[ -z "$package" ]]; then
+    fail "apt_package_available requires a package name."
+  fi
+  detect_package_manager
+  if [[ "$PACKAGE_MANAGER" != "apt" ]]; then
+    return 1
+  fi
+  refresh_package_index_once
+  local candidate
+  candidate="$(apt-cache policy "$package" 2>/dev/null | awk -F': ' '/Candidate:/ {print $2; exit}' || true)"
+  if [[ -z "$candidate" || "$candidate" == "(none)" ]]; then
+    return 1
+  fi
+  return 0
+}
+
+# This function determines the correct docker compose binary architecture identifier.
+detect_compose_arch() {
+  local kernel_arch
+  kernel_arch="$(uname -m)"
+  case "$kernel_arch" in
+    x86_64|amd64)
+      printf 'x86_64\n'
+      ;;
+    arm64|aarch64)
+      printf 'aarch64\n'
+      ;;
+    armv7l|armv7)
+      printf 'armv7\n'
+      ;;
+    *)
+      fail "Unsupported architecture '${kernel_arch}' for docker compose fallback installation."
+      ;;
+  esac
+}
+
+# This function downloads and installs the docker compose CLI plugin directly from the upstream release artifacts.
+install_compose_from_upstream_release() {
+  ensure_command curl
+  local arch
+  arch="$(detect_compose_arch)"
+  local version="$COMPOSE_FALLBACK_VERSION"
+  local plugin_dir="/usr/local/lib/docker/cli-plugins"
+  local destination="${plugin_dir}/docker-compose"
+  local url="https://github.com/docker/compose/releases/download/${version}/docker-compose-linux-${arch}"
+  log "Installing docker compose plugin (${version}, ${arch}) from upstream release..."
+  run_privileged mkdir -p "$plugin_dir"
+  run_privileged curl -fsSL "$url" -o "$destination"
+  run_privileged chmod +x "$destination"
+}
+
+# This function ensures either the docker compose CLI plugin or the legacy docker-compose binary is installed.
+install_docker_compose_support() {
+  if docker compose version >/dev/null 2>&1; then
+    return
+  fi
+  if command -v docker-compose >/dev/null 2>&1; then
+    return
+  fi
+  detect_package_manager
+  case "$PACKAGE_MANAGER" in
+    apt)
+      if apt_package_available "docker-compose-plugin"; then
+        install_packages_if_missing docker-compose-plugin
+        return
+      fi
+      if apt_package_available "docker-compose"; then
+        install_packages_if_missing docker-compose
+        return
+      fi
+      ;;
+  esac
+  install_compose_from_upstream_release
+}
+
 # This function installs every prerequisite required for the media stack, including Docker, docker compose, and ufw.
 install_prerequisites() {
   local base_packages=(ca-certificates curl gnupg lsb-release ufw software-properties-common)
   install_packages_if_missing "${base_packages[@]}"
-  local docker_packages=(docker.io docker-compose-plugin)
-  install_packages_if_missing "${docker_packages[@]}"
+  install_packages_if_missing docker.io
+  install_docker_compose_support
   ensure_command docker
   ensure_command ufw
   ensure_docker_service_running
