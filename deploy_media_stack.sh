@@ -2,31 +2,38 @@
 
 # This directive enforces strict error handling, halting on undefined variables, command errors, or broken pipelines.
 set -euo pipefail
+set -o errtrace
 # This directive standardizes word splitting to eliminate surprising whitespace behavior.
 IFS=$'\n\t'
 # This trap routes every unexpected error through the dedicated handler so failures always log contextual information.
 trap 'handle_error $? $LINENO' ERR
 
 # This variable stores the directory that contains this script so relative paths remain stable no matter where we run from.
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # This variable defines where docker-compose.yml is expected to live by default unless COMPOSE_FILE overrides it.
-DEFAULT_COMPOSE_FILE="${SCRIPT_DIR}/docker-compose.yml"
+readonly DEFAULT_COMPOSE_FILE="${SCRIPT_DIR}/docker-compose.yml"
 # This variable captures a user override for compose configuration, falling back to the default path when unset.
-COMPOSE_FILE_INPUT="${COMPOSE_FILE:-$DEFAULT_COMPOSE_FILE}"
+readonly COMPOSE_FILE_INPUT="${COMPOSE_FILE:-$DEFAULT_COMPOSE_FILE}"
 # This variable defines the default .env path so configuration lives alongside the script when not overridden.
-DEFAULT_ENV_FILE="${SCRIPT_DIR}/.env"
+readonly DEFAULT_ENV_FILE="${SCRIPT_DIR}/.env"
 # This variable captures a user-provided env file location while defaulting to the local .env file.
-ENV_FILE_INPUT="${MEDIA_STACK_ENV:-$DEFAULT_ENV_FILE}"
+readonly ENV_FILE_INPUT="${MEDIA_STACK_ENV:-$DEFAULT_ENV_FILE}"
 # This variable points to the template env file so the script can bootstrap configuration automatically.
-ENV_TEMPLATE_FILE_INPUT="${SCRIPT_DIR}/.env.example"
+readonly ENV_TEMPLATE_FILE_INPUT="${SCRIPT_DIR}/.env.example"
 # This variable records the directory used to store deployment state artifacts (e.g., firewall rules) for safe rollback.
-STATE_DIR="${SCRIPT_DIR}/.media_stack_state"
+readonly STATE_DIR="${SCRIPT_DIR}/.media_stack_state"
 # This variable tracks the file that lists firewall rules added by the deploy workflow so rollback knows what to remove.
-FIREWALL_STATE_FILE="${STATE_DIR}/firewall_rules"
+readonly FIREWALL_STATE_FILE="${STATE_DIR}/firewall_rules"
 # This variable defines how many attempts should be made when retrying transient operations (e.g., image pulls).
-MAX_RETRIES=3
+readonly MAX_RETRIES=3
 # This variable defines the base delay (in seconds) between retries to avoid hammering external services.
-RETRY_DELAY_SECONDS=5
+readonly RETRY_DELAY_SECONDS=5
+# This variable defines which docker compose release to download when repository packages are unavailable.
+readonly COMPOSE_FALLBACK_VERSION="${COMPOSE_FALLBACK_VERSION:-v2.29.7}"
+# These arrays provide centralized declarations for validation and directory preparation.
+readonly -a REQUIRED_ENV_VARS=(PUID PGID TZ MEDIA_CONFIG_DIR MEDIA_MEDIA_DIR MEDIA_DOWNLOADS_DIR RADARR_PORT SONARR_PORT PROWLARR_PORT JACKETT_PORT TRANSMISSION_WEB_PORT TRANSMISSION_RPC_PORT TRANSMISSION_PEER_PORT MEDIA_LOCAL_NETWORK_CIDR)
+readonly -a REQUIRED_PORT_VARS=(RADARR_PORT SONARR_PORT PROWLARR_PORT JACKETT_PORT TRANSMISSION_WEB_PORT TRANSMISSION_RPC_PORT TRANSMISSION_PEER_PORT)
+readonly -a SERVICE_CONFIG_DIRS=(plex radarr sonarr prowlarr jackett transmission)
 # This variable indicates which package manager should be used; currently only apt is supported.
 PACKAGE_MANAGER=""
 # This flag tracks whether the package index has already been refreshed to avoid redundant update calls.
@@ -35,14 +42,22 @@ PACKAGE_INDEX_REFRESHED=false
 SUDO_BIN=""
 # This array captures the resolved docker compose command variant (plugin or legacy binary).
 COMPOSE_CMD=()
-# This variable defines which docker compose release to download when repository packages are unavailable.
-COMPOSE_FALLBACK_VERSION="${COMPOSE_FALLBACK_VERSION:-v2.29.7}"
 # This array stores firewall rules as proto|port|source entries so we can reproduce them during rollback.
 FIREWALL_RULES=()
 
 # This function prints informational messages with a consistent prefix for easier log scanning.
 log() {
-  printf '[media-stack] %s\n' "$*"
+  printf '[media-stack][info] %s\n' "$*"
+}
+
+# This function highlights key phase transitions to keep console output easy to follow.
+log_step() {
+  printf '\n[media-stack][step] %s\n' "$*"
+}
+
+# This function emits warning messages while keeping the format consistent with other logs.
+log_warn() {
+  printf '[media-stack][warn] %s\n' "$*" >&2
 }
 
 # This function prints errors in a consistent format and then exits the script with a failure status.
@@ -391,9 +406,8 @@ ensure_env_file() {
 # This function validates that every required environment variable has a value to prevent partial deployments.
 ensure_required_env_vars() {
   local missing=()
-  local required_vars=(PUID PGID TZ MEDIA_CONFIG_DIR MEDIA_MEDIA_DIR MEDIA_DOWNLOADS_DIR RADARR_PORT SONARR_PORT TRANSMISSION_WEB_PORT TRANSMISSION_RPC_PORT TRANSMISSION_PEER_PORT MEDIA_LOCAL_NETWORK_CIDR)
   local var
-  for var in "${required_vars[@]}"; do
+  for var in "${REQUIRED_ENV_VARS[@]}"; do
     if [[ -z "${!var:-}" ]]; then
       missing+=("$var")
     fi
@@ -401,6 +415,32 @@ ensure_required_env_vars() {
   if ((${#missing[@]} > 0)); then
     fail "Missing required variable(s) in $ENV_FILE: ${missing[*]}"
   fi
+  validate_port_values
+}
+
+# This function ensures every declared port-like value is numeric and within the valid TCP/UDP range.
+validate_port_values() {
+  local invalid=()
+  local var
+  local value
+  for var in "${REQUIRED_PORT_VARS[@]}"; do
+    value="${!var:-}"
+    if ! is_valid_port "$value"; then
+      invalid+=("${var}=${value:-<empty>}")
+    fi
+  done
+  if ((${#invalid[@]} > 0)); then
+    fail "Invalid port value(s) detected: ${invalid[*]}. Expected integers between 1 and 65535."
+  fi
+}
+
+# This helper validates a single port value according to basic TCP/UDP constraints.
+is_valid_port() {
+  local candidate="$1"
+  [[ "$candidate" =~ ^[0-9]+$ ]] || return 1
+  local -i port="$candidate"
+  ((port >= 1 && port <= 65535)) || return 1
+  return 0
 }
 
 # This function ensures every directory needed by the containers exists with the right structure.
@@ -413,6 +453,15 @@ ensure_dir() {
   resolved="$(resolve_path "$raw_path")"
   mkdir -p "$resolved"
   log "Ensured directory: $resolved"
+}
+
+# This function batches directory creation to reduce boilerplate and improve readability.
+ensure_dirs() {
+  local path
+  for path in "$@"; do
+    [[ -z "$path" ]] && continue
+    ensure_dir "$path"
+  done
 }
 
 # This function removes directories safely, guarding against accidental deletion of the filesystem root.
@@ -434,17 +483,20 @@ remove_dir() {
   fi
 }
 
-# This function prepares the filesystem tree expected by plex/radarr/sonarr prior to running docker compose.
+# This function prepares the filesystem tree expected by every service prior to running docker compose.
 prepare_directories() {
-  ensure_dir "$MEDIA_CONFIG_DIR/plex"
-  ensure_dir "$MEDIA_CONFIG_DIR/radarr"
-  ensure_dir "$MEDIA_CONFIG_DIR/sonarr"
-  ensure_dir "$MEDIA_CONFIG_DIR/transmission"
-  ensure_dir "$MEDIA_MEDIA_DIR/movies"
-  ensure_dir "$MEDIA_MEDIA_DIR/tv"
-  ensure_dir "$MEDIA_DOWNLOADS_DIR"
-  ensure_dir "$MEDIA_DOWNLOADS_DIR/watch"
-  ensure_dir "$MEDIA_DOWNLOADS_DIR/incomplete"
+  local config_paths=()
+  local name
+  for name in "${SERVICE_CONFIG_DIRS[@]}"; do
+    config_paths+=("$MEDIA_CONFIG_DIR/$name")
+  done
+  ensure_dirs "${config_paths[@]}"
+  ensure_dirs \
+    "$MEDIA_MEDIA_DIR/movies" \
+    "$MEDIA_MEDIA_DIR/tv" \
+    "$MEDIA_DOWNLOADS_DIR" \
+    "$MEDIA_DOWNLOADS_DIR/watch" \
+    "$MEDIA_DOWNLOADS_DIR/incomplete"
 }
 
 # This function determines whether the docker compose plugin or legacy binary should be used.
@@ -492,21 +544,24 @@ prepull_images() {
 # This function gathers the firewall rules required for every service so ufw can be configured consistently.
 collect_firewall_rules() {
   FIREWALL_RULES=()
-  local plex_port="${PLEX_HTTP_PORT:-32400}"
-  local radarr_port="${RADARR_PORT:-7878}"
-  local sonarr_port="${SONARR_PORT:-8989}"
-  local transmission_web_port="${TRANSMISSION_WEB_PORT:-9091}"
-  local transmission_rpc_port="${TRANSMISSION_RPC_PORT:-9091}"
-  local transmission_peer_port="${TRANSMISSION_PEER_PORT:-51413}"
   local local_cidr="${MEDIA_LOCAL_NETWORK_CIDR:-any}"
-  append_firewall_rule "tcp" "$plex_port" "$local_cidr"
-  append_firewall_rule "tcp" "$radarr_port" "$local_cidr"
-  append_firewall_rule "tcp" "$sonarr_port" "$local_cidr"
-  append_firewall_rule "tcp" "$transmission_web_port" "$local_cidr"
-  append_firewall_rule "tcp" "$transmission_rpc_port" "$local_cidr"
-  append_firewall_rule "tcp" "$transmission_peer_port" "$local_cidr"
-  append_firewall_rule "udp" "$transmission_peer_port" "$local_cidr"
+  local -a tcp_ports=(
+    "${PLEX_HTTP_PORT:-32400}"
+    "${RADARR_PORT:-7878}"
+    "${SONARR_PORT:-8989}"
+    "${PROWLARR_PORT:-9696}"
+    "${JACKETT_PORT:-9117}"
+    "${TRANSMISSION_WEB_PORT:-9091}"
+    "${TRANSMISSION_RPC_PORT:-9091}"
+    "${TRANSMISSION_PEER_PORT:-51413}"
+  )
+  local port
+  for port in "${tcp_ports[@]}"; do
+    append_firewall_rule "tcp" "$port" "$local_cidr"
+  done
+  append_firewall_rule "udp" "${TRANSMISSION_PEER_PORT:-51413}" "$local_cidr"
   if [[ -n "${MEDIA_EXTRA_TCP_PORTS:-}" ]]; then
+    local -a extra_ports=()
     IFS=',' read -r -a extra_ports <<<"$MEDIA_EXTRA_TCP_PORTS"
     local value
     for value in "${extra_ports[@]}"; do
@@ -562,9 +617,9 @@ remove_firewall_rules() {
     local pretty_source="${source:-any}"
     log "Removing firewall rule for ${port}/${proto} from ${pretty_source}"
     if [[ "$source" == "any" ]]; then
-      run_privileged ufw --force delete allow "$port/$proto" >/dev/null || log "Failed to remove firewall rule ${port}/${proto}; continuing."
+      run_privileged ufw --force delete allow "$port/$proto" >/dev/null || log_warn "Failed to remove firewall rule ${port}/${proto}; continuing."
     else
-      run_privileged ufw --force delete allow from "$source" to any port "$port" proto "$proto" >/dev/null || log "Failed to remove firewall rule ${port}/${proto} from ${pretty_source}; continuing."
+      run_privileged ufw --force delete allow from "$source" to any port "$port" proto "$proto" >/dev/null || log_warn "Failed to remove firewall rule ${port}/${proto} from ${pretty_source}; continuing."
     fi
   done <"$FIREWALL_STATE_FILE"
   clear_firewall_state
@@ -573,8 +628,11 @@ remove_firewall_rules() {
 # This function runs docker compose up after prerequisites are installed, directories prepared, and firewall configured.
 deploy_stack() {
   local extra_up_args=("$@")
+  log_step "Preparing persistent directories"
   prepare_directories
+  log_step "Configuring firewall rules"
   configure_firewall
+  log_step "Pre-pulling container images"
   prepull_images
   local up_args
   if ((${#extra_up_args[@]} > 0)); then
@@ -582,13 +640,14 @@ deploy_stack() {
   else
     up_args=("up" "-d")
   fi
+  log_step "Starting docker compose services"
   run_compose "${up_args[@]}"
   verify_stack
 }
 
 # This function provides a quick health check by showing the current docker compose status after deployment.
 verify_stack() {
-  log "Verifying container status..."
+  log_step "Verifying container status"
   run_compose ps
 }
 
