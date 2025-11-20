@@ -65,8 +65,8 @@ services:
       - ${MEDIA_DOWNLOADS_DIR}/watch:/watch
       - ${MEDIA_DOWNLOADS_DIR}/incomplete:/incomplete
     ports:
-      - "${TRANSMISSION_WEB_PORT}:${TRANSMISSION_WEB_PORT}"
-      - "${TRANSMISSION_RPC_PORT}:${TRANSMISSION_RPC_PORT}"
-      - "${TRANSMISSION_PEER_PORT}:${TRANSMISSION_PEER_PORT}"
-      - "${TRANSMISSION_PEER_PORT}:${TRANSMISSION_PEER_PORT}/udp"
+        # Transmission web UI and RPC share the same TCP port, so we only map it once.
+        - "${TRANSMISSION_WEB_PORT}:${TRANSMISSION_WEB_PORT}"
+        - "${TRANSMISSION_PEER_PORT}:${TRANSMISSION_PEER_PORT}"
+        - "${TRANSMISSION_PEER_PORT}:${TRANSMISSION_PEER_PORT}/udp"
     restart: unless-stopped

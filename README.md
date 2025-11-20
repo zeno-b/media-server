@@ -23,6 +23,7 @@ Scripts and configuration for running a self-hosted media stack with Plex, Radar
    ./deploy_media_stack.sh rollback
    ```
    **Warning:** rollback deletes `MEDIA_CONFIG_DIR`, `MEDIA_DOWNLOADS_DIR`, and the `movies`/`tv` subfolders under `MEDIA_MEDIA_DIR`.
+   Use subcommand names directly (e.g. `rollback` without a leading dash). The script also accepts `-rollback`/`--rollback` for convenience.
 4. Access the services:
    - Plex: `http://<host>:32400/web` (host networking, so no explicit port mapping)
    - Radarr: `http://<host>:7878`
@@ -34,6 +35,7 @@ Persistent data lives under the paths defined in `.env` (defaults to `media-data
 ## Transmission integration
 - Transmission shares the same `/downloads` volume as Radarr and Sonarr, so completed downloads are instantly visible to the indexers.
 - Set `TRANSMISSION_RPC_USERNAME` / `TRANSMISSION_RPC_PASSWORD` (optional but recommended) and use the service name `transmission` with port `${TRANSMISSION_RPC_PORT}` when configuring the Download Client inside Radarr/Sonarr.
+- The Web UI and RPC share the same TCP port, so exposing `${TRANSMISSION_WEB_PORT}` once makes both interfaces reachable.
 - The deploy script pre-creates `watch` and `incomplete` folders under `MEDIA_DOWNLOADS_DIR` so Transmission's watch directory and incomplete folder work out of the box.
 
 ## Firewall automation
