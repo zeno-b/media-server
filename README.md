@@ -1,10 +1,10 @@
 # media-server
 
-Scripts and configuration for running a self-hosted media stack with Plex, Radarr, Sonarr, and Transmission via Docker Compose.
+Scripts and configuration for running a self-hosted media stack with Plex, Radarr, Sonarr, Transmission, Prowlarr, and Jackett via Docker Compose.
 
 ## Prerequisites
 - Linux/macOS host with Docker Engine and the Docker Compose plugin (or `docker-compose`)
-- Open ports 32400 (Plex), 7878 (Radarr), 8989 (Sonarr), 9091 (Transmission web/RPC), and 51413 TCP/UDP (Transmission peers) on your LAN or allow them via UFW
+- Open ports 32400 (Plex), 7878 (Radarr), 8989 (Sonarr), 9696 (Prowlarr), 9117 (Jackett), 9091 (Transmission web/RPC), and 51413 TCP/UDP (Transmission peers) on your LAN or allow them via UFW
 - Plex account (optional but required to claim the server)
 
 ## Quick start
@@ -25,10 +25,12 @@ Scripts and configuration for running a self-hosted media stack with Plex, Radar
    **Warning:** rollback deletes `MEDIA_CONFIG_DIR`, `MEDIA_DOWNLOADS_DIR`, and the `movies`/`tv` subfolders under `MEDIA_MEDIA_DIR`.
    Use subcommand names directly (e.g. `rollback` without a leading dash). The script also accepts `-rollback`/`--rollback` for convenience.
 4. Access the services:
-   - Plex: `http://<host>:32400/web` (host networking, so no explicit port mapping)
-   - Radarr: `http://<host>:7878`
-   - Sonarr: `http://<host>:8989`
-   - Transmission: `http://<host>:9091`
+    - Plex: `http://<host>:32400/web` (host networking, so no explicit port mapping)
+    - Radarr: `http://<host>:7878`
+    - Sonarr: `http://<host>:8989`
+    - Prowlarr: `http://<host>:9696`
+    - Jackett: `http://<host>:9117`
+    - Transmission: `http://<host>:9091`
 
 Persistent data lives under the paths defined in `.env` (defaults to `media-data/` next to the repo). Back up those directories to preserve your configuration and libraries.
 
@@ -38,7 +40,12 @@ Persistent data lives under the paths defined in `.env` (defaults to `media-data
 - The Web UI and RPC share the same TCP port, so exposing `${TRANSMISSION_WEB_PORT}` once makes both interfaces reachable.
 - The deploy script pre-creates `watch` and `incomplete` folders under `MEDIA_DOWNLOADS_DIR` so Transmission's watch directory and incomplete folder work out of the box.
 
+## Indexer automation
+- Prowlarr centralizes your indexers and syncs them back to Radarr and Sonarr. Use `http://prowlarr:9696` (inside the Compose network) plus your Prowlarr API key when adding the app inside Radarr/Sonarr so everything communicates over the private Docker network without extra port mapping.
+- Inside Prowlarr, add Radarr and Sonarr as applications using their service URLs (`http://radarr:7878` and `http://sonarr:8989`) so releases flow automatically into the download clients you already configured.
+- Jackett stays available for trackers that Prowlarr does not support. Its `/downloads` mount points at the stack's `watch` directory, so enabling the Blackhole feature in Jackett will drop `.torrent` files directly into Transmission's watch folder for immediate processing.
+
 ## Firewall automation
-- Define `MEDIA_LOCAL_NETWORK_CIDR` (for example `192.168.1.0/24`) in `.env`. The deploy script enables UFW (if needed) and allows Plex, Radarr, Sonarr, and Transmission ports from that CIDR automatically.
+- Define `MEDIA_LOCAL_NETWORK_CIDR` (for example `192.168.1.0/24`) in `.env`. The deploy script enables UFW (if needed) and allows Plex, Radarr, Sonarr, Prowlarr, Jackett, and Transmission ports from that CIDR automatically.
 - Optional `MEDIA_EXTRA_TCP_PORTS` lets you open additional TCP ports (comma-separated) for the same CIDR.
 - Rollback removes every firewall rule the deploy step created, restoring the host to its previous state.
