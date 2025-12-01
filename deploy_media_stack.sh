@@ -416,6 +416,7 @@ ensure_required_env_vars() {
     fail "Missing required variable(s) in $ENV_FILE: ${missing[*]}"
   fi
   validate_port_values
+  validate_user_group_ids
 }
 
 # This function ensures every declared port-like value is numeric and within the valid TCP/UDP range.
@@ -443,6 +444,25 @@ is_valid_port() {
   return 0
 }
 
+validate_user_group_ids() {
+  local invalid=()
+  if ! is_positive_integer "${PUID:-}"; then
+    invalid+=("PUID=${PUID:-<empty>}")
+  fi
+  if ! is_positive_integer "${PGID:-}"; then
+    invalid+=("PGID=${PGID:-<empty>}")
+  fi
+  if ((${#invalid[@]} > 0)); then
+    fail "Invalid user/group ID value(s): ${invalid[*]}. Provide numeric IDs such as 1000."
+  fi
+}
+
+is_positive_integer() {
+  local candidate="$1"
+  [[ "$candidate" =~ ^[0-9]+$ ]] || return 1
+  return 0
+}
+
 # This function ensures every directory needed by the containers exists with the right structure.
 ensure_dir() {
   local raw_path="$1"
@@ -452,7 +472,24 @@ ensure_dir() {
   local resolved
   resolved="$(resolve_path "$raw_path")"
   mkdir -p "$resolved"
+  ensure_dir_ownership "$resolved"
   log "Ensured directory: $resolved"
+}
+
+ensure_dir_ownership() {
+  local path="$1"
+  if [[ -z "${PUID:-}" || -z "${PGID:-}" ]]; then
+    return
+  fi
+  [[ -e "$path" ]] || return
+  local desired="${PUID}:${PGID}"
+  local current
+  current="$(stat -c '%u:%g' "$path" 2>/dev/null || true)"
+  if [[ "$current" == "$desired" ]]; then
+    return
+  fi
+  run_privileged chown "$desired" "$path"
+  log "Aligned ownership (${desired}) for $path"
 }
 
 # This function batches directory creation to reduce boilerplate and improve readability.

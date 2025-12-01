@@ -34,6 +34,11 @@ Scripts and configuration for running a self-hosted media stack with Plex, Radar
 
 Persistent data lives under the paths defined in `.env` (defaults to `media-data/` next to the repo). Back up those directories to preserve your configuration and libraries.
 
+## File permissions
+- Containers run as the UID/GID you set via `PUID`/`PGID`, and the deploy script now aligns the ownership of every config, downloads, and library directory before Compose starts. This keeps Radarr/Sonarr/Plex from hitting `Permission denied` when moving files between `/downloads` and `/media`.
+- If you created those folders manually (or on a previous release) and see errors such as `Couldn't move '/downloads/incomplete' to '/media/movies': Permission denied (13)`, simply re-run `./deploy_media_stack.sh deploy` so the script can fix the ownership automatically.
+- When you cannot re-run the script, apply the same fix manually by running `sudo chown -R <PUID>:<PGID> media-data/{config,downloads,library}` (adjust the paths if you customized them in `.env`).
+
 ## Transmission integration
 - Transmission shares the same `/downloads` volume as Radarr and Sonarr, so completed downloads are instantly visible to the indexers.
 - Set `TRANSMISSION_RPC_USERNAME` / `TRANSMISSION_RPC_PASSWORD` (optional but recommended) and use the service name `transmission` with port `${TRANSMISSION_RPC_PORT}` when configuring the Download Client inside Radarr/Sonarr.
