@@ -235,9 +235,9 @@ install_compose_from_upstream_release() {
   local destination="${plugin_dir}/docker-compose"
   local url="https://github.com/docker/compose/releases/download/${version}/docker-compose-linux-${arch}"
   log "Installing docker compose plugin (${version}, ${arch}) from upstream release..."
-  run_privileged mkdir -p "$plugin_dir"
-  run_privileged curl -fsSL "$url" -o "$destination"
-  run_privileged chmod +x "$destination"
+  run_privileged mkdir -p "$plugin_dir" || return 1
+  run_privileged curl -fsSL "$url" -o "$destination" || return 1
+  run_privileged chmod +x "$destination" || return 1
 }
 
 # This function ensures either the docker compose CLI plugin or the legacy docker-compose binary is installed.
@@ -245,23 +245,55 @@ install_docker_compose_support() {
   if docker compose version >/dev/null 2>&1; then
     return
   fi
-  if command -v docker-compose >/dev/null 2>&1; then
-    return
-  fi
   detect_package_manager
+  local plugin_attempted=false
+  local plugin_installed=false
   case "$PACKAGE_MANAGER" in
     apt)
       if apt_package_available "docker-compose-plugin"; then
+        plugin_attempted=true
         install_packages_if_missing docker-compose-plugin
-        return
+        plugin_installed=true
+      else
+        plugin_attempted=true
+        if install_compose_from_upstream_release; then
+          plugin_installed=true
+        else
+          log_warn "Failed to install docker compose plugin from upstream release."
+        fi
       fi
+      ;;
+    *)
+      plugin_attempted=true
+      if install_compose_from_upstream_release; then
+        plugin_installed=true
+      else
+        log_warn "Failed to install docker compose plugin from upstream release."
+      fi
+      ;;
+  esac
+  if docker compose version >/dev/null 2>&1; then
+    return
+  fi
+  if [[ "$plugin_installed" == "true" ]]; then
+    log_warn "docker compose plugin appears installed but command is unavailable; attempting legacy docker-compose."
+  elif [[ "$plugin_attempted" == "true" ]]; then
+    log_warn "docker compose plugin installation failed; attempting legacy docker-compose."
+  else
+    log_warn "docker compose plugin not attempted; attempting legacy docker-compose."
+  fi
+  if command -v docker-compose >/dev/null 2>&1; then
+    return
+  fi
+  case "$PACKAGE_MANAGER" in
+    apt)
       if apt_package_available "docker-compose"; then
         install_packages_if_missing docker-compose
         return
       fi
       ;;
   esac
-  install_compose_from_upstream_release
+  fail "Unable to install docker compose plugin or legacy docker-compose binary."
 }
 
 # This function installs every prerequisite required for the media stack, including Docker, docker compose, and ufw.
